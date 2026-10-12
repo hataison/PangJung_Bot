@@ -25,10 +25,9 @@ def run_dummy_server():
     server.serve_forever()
 
 def get_weather_data(user_text: str) -> str:
-    """Detects city and pulls live data directly from Open-Meteo API."""
+    """Fetch live weather from Open-Meteo using current_weather=true."""
     text = user_text.lower()
     
-    # Map common cities to Lat/Lon coordinates
     cities = {
         "tokyo": (35.6762, 139.6503, "Tokyo, Japan"),
         "bangkok": (13.7563, 100.5018, "Bangkok, Thailand"),
@@ -43,34 +42,34 @@ def get_weather_data(user_text: str) -> str:
             selected_city = data
             break
             
-    # Default to Tokyo if weather query was asked without a specific mapped city
     if not selected_city and any(k in text for k in ["weather", "temperature", "forecast"]):
         selected_city = cities["tokyo"]
 
     if selected_city:
         lat, lon, city_name = selected_city
         try:
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m"
-            res = requests.get(url, timeout=5).json()
-            curr = res.get("current", {})
-            temp = curr.get("temperature_2m")
-            humidity = curr.get("relative_humidity_2m")
-            wind = curr.get("wind_speed_10m")
-            return f"LIVE WEATHER REPORT ({city_name}): Temperature: {temp}°C, Humidity: {humidity}%, Wind Speed: {wind} km/h."
+            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                data = response.json().get("current_weather", {})
+                temp = data.get("temperature")
+                wind = data.get("windspeed")
+                if temp is not None:
+                    return f"LIVE WEATHER DATA FOR {city_name}: Temperature is {temp}°C, Wind Speed is {wind} km/h."
         except Exception as e:
             print(f"Weather API Exception: {e}")
 
     return ""
 
 def search_duckduckgo(query: str) -> str:
-    """General DuckDuckGo fallback search."""
+    """General web search fallback."""
     try:
         results = []
         with DDGS() as ddgs:
             for r in ddgs.text(query, max_results=3):
                 results.append(f"- {r.get('title')}: {r.get('body')}")
         if results:
-            return "LIVE SEARCH RESULTS:\n" + "\n".join(results)
+            return "LIVE WEB SEARCH RESULTS:\n" + "\n".join(results)
     except Exception as e:
         print(f"DuckDuckGo Exception: {e}")
     return ""
@@ -81,23 +80,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.chat.send_action("typing")
 
-    # 1. Try weather API first
+    # 1. Fetch live weather first
     live_info = get_weather_data(user_text)
 
-    # 2. Try DuckDuckGo search if weather did not trigger
+    # 2. If weather query was not triggered or returned empty, do web search
     if not live_info:
         live_info = search_duckduckgo(user_text)
 
-    # System prompt enforcing live context usage
+    # Build prompt with live context
     if live_info:
         system_content = (
-            "You are a helpful assistant with real-time web access.\n"
+            "You are a helpful AI assistant with real-time web access.\n\n"
             f"{live_info}\n\n"
-            "INSTRUCTION: Use the LIVE DATA above to answer the user accurately. "
-            "Never say you cannot access live weather or real-time data."
+            "INSTRUCTION: Use the LIVE DATA above to answer the user's question directly and concisely."
         )
     else:
-        system_content = "You are a concise, helpful assistant."
+        system_content = "You are a concise, helpful AI assistant."
 
     try:
         completion = client.chat.completions.create(
