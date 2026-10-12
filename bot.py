@@ -1,19 +1,12 @@
 import os
-import logging
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from groq import Groq
 
-# Configure logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
-
-# Fetch secrets from environment variables
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+# Initialize API Keys from environment variables
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 client = Groq(api_key=GROQ_API_KEY)
@@ -39,7 +32,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",
             messages=[
                 {
                     "role": "system",
@@ -55,8 +48,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     print(f"[Sent]: {reply[:50]}...")
     await update.message.reply_text(reply)
-    print(f"[Sent]: {reply[:50]}...")
-    await update.message.reply_text(reply)
 
 if __name__ == "__main__":
     # Start dummy web server in a separate thread
@@ -64,6 +55,6 @@ if __name__ == "__main__":
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
+
     print("--- PangJung_Bot is ONLINE (24/7 Groq Cloud) ---")
     app.run_polling()
