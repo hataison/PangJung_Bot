@@ -55,6 +55,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     print(f"[Sent]: {reply[:50]}...")
     await update.message.reply_text(reply)
+    print(f"[Sent]: {reply[:50]}...")
+    await update.message.reply_text(reply)
 
 if __name__ == "__main__":
     # Start dummy web server in a separate thread
