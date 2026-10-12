@@ -1,6 +1,5 @@
 import os
 import threading
-import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
@@ -24,55 +23,21 @@ def run_dummy_server():
     server = HTTPServer(("0.0.0.0", port), DummyServer)
     server.serve_forever()
 
-def get_weather_data(user_text: str) -> str:
-    """Fetch live weather from Open-Meteo using current_weather=true."""
-    text = user_text.lower()
-    
-    cities = {
-        "tokyo": (35.6762, 139.6503, "Tokyo, Japan"),
-        "bangkok": (13.7563, 100.5018, "Bangkok, Thailand"),
-        "london": (51.5074, -0.1278, "London, UK"),
-        "new york": (40.7128, -74.0060, "New York, USA"),
-        "singapore": (1.3521, 103.8198, "Singapore"),
-    }
-    
-    selected_city = None
-    for name, data in cities.items():
-        if name in text:
-            selected_city = data
-            break
-            
-    if not selected_city and any(k in text for k in ["weather", "temperature", "forecast"]):
-        selected_city = cities["tokyo"]
-
-    if selected_city:
-        lat, lon, city_name = selected_city
-        try:
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                data = response.json().get("current_weather", {})
-                temp = data.get("temperature")
-                wind = data.get("windspeed")
-                if temp is not None:
-                    return f"LIVE WEATHER DATA FOR {city_name}: Temperature is {temp}°C, Wind Speed is {wind} km/h."
-        except Exception as e:
-            print(f"Weather API Exception: {e}")
-
-    return ""
-
-def search_duckduckgo(query: str) -> str:
-    """General web search fallback."""
+def fetch_live_search(query: str) -> str:
+    """Performs real-time web search for any prompt using DuckDuckGo."""
     try:
         results = []
         with DDGS() as ddgs:
             for r in ddgs.text(query, max_results=3):
-                results.append(f"- {r.get('title')}: {r.get('body')}")
+                title = r.get("title", "")
+                snippet = r.get("body", "")
+                if snippet:
+                    results.append(f"Source: {title}\nInfo: {snippet}")
         if results:
-            return "LIVE WEB SEARCH RESULTS:\n" + "\n".join(results)
+            return "\n\n".join(results)
     except Exception as e:
-        print(f"DuckDuckGo Exception: {e}")
-    return ""
+        print(f"DuckDuckGo search error: {e}")
+    return "No live search results available."
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
@@ -80,35 +45,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.chat.send_action("typing")
 
-    # 1. Fetch live weather first
-    live_info = get_weather_data(user_text)
-
-    # 2. If weather query was not triggered or returned empty, do web search
-    if not live_info:
-        live_info = search_duckduckgo(user_text)
-
-    # Build prompt with live context
-    if live_info:
-        system_content = (
-            "You are a helpful AI assistant with real-time web access.\n\n"
-            f"{live_info}\n\n"
-            "INSTRUCTION: Use the LIVE DATA above to answer the user's question directly and concisely."
-        )
-    else:
-        system_content = "You are a concise, helpful AI assistant."
+    # Always attempt a quick live web search context build
+    search_context = fetch_live_search(user_text)
 
     try:
         completion = client.chat.completions.create(
             model="openai/gpt-oss-120b",
             messages=[
-                {"role": "system", "content": system_content},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a helpful AI assistant. Answer the user's message using "
+                        "the real-time web search results provided below whenever relevant.\n\n"
+                        f"REAL-TIME SEARCH CONTEXT:\n{search_context}"
+                    )
+                },
                 {"role": "user", "content": user_text}
             ],
             max_tokens=512,
         )
-        reply = completion.choices[0].message.content
+        reply = completion.choices[0].message.content or "I couldn't generate a response. Please try asking again."
     except Exception as e:
         reply = f"Error: {str(e)}"
+
+    # Ensure message text is never empty before sending to Telegram
+    if not reply.strip():
+        reply = "Sorry, I received an empty response. Please try rephrasing your question."
 
     print(f"[Sent]: {reply[:50]}...")
     await update.message.reply_text(reply)
@@ -119,5 +81,5 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("--- PangJung_Bot Online ---")
+    print("--- PangJung_Bot with DDG Live Search Online ---")
     app.run_polling()
