@@ -1,5 +1,6 @@
 import os
 import threading
+import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
@@ -23,8 +24,21 @@ def run_dummy_server():
     server = HTTPServer(("0.0.0.0", port), DummyServer)
     server.serve_forever()
 
-def fetch_live_search(query: str) -> str:
-    """Performs real-time web search for any prompt using DuckDuckGo."""
+def fetch_live_info(query: str) -> str:
+    """Fetch live data using DuckDuckGo search or weather API."""
+    text_lower = query.lower()
+    
+    # Fast path for weather requests
+    if any(k in text_lower for k in ["weather", "temperature", "forecast"]):
+        try:
+            # Fetch direct one-line weather details via wttr.in
+            res = requests.get(f"https://wttr.in/{query}?format=%l:+%C+%t+Humidity:%h+Wind:%w", headers={"User-Agent": "curl/7.68.0"}, timeout=5)
+            if res.status_code == 200 and res.text.strip():
+                return f"[LIVE WEATHER DATA]: {res.text.strip()}"
+        except Exception as e:
+            print(f"Weather fetch error: {e}")
+
+    # General web search for other queries
     try:
         results = []
         with DDGS() as ddgs:
@@ -32,12 +46,13 @@ def fetch_live_search(query: str) -> str:
                 title = r.get("title", "")
                 snippet = r.get("body", "")
                 if snippet:
-                    results.append(f"Source: {title}\nInfo: {snippet}")
+                    results.append(f"Title: {title}\nSummary: {snippet}")
         if results:
-            return "\n\n".join(results)
+            return "[LIVE WEB SEARCH RESULTS]:\n" + "\n\n".join(results)
     except Exception as e:
-        print(f"DuckDuckGo search error: {e}")
-    return "No live search results available."
+        print(f"DuckDuckGo error: {e}")
+        
+    return ""
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
@@ -45,32 +60,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.chat.send_action("typing")
 
-    # Always attempt a quick live web search context build
-    search_context = fetch_live_search(user_text)
+    # Fetch live information
+    live_data = fetch_live_info(user_text)
+
+    # Build prompt messages: Inject live context directly into user message flow
+    messages = []
+    
+    if live_data:
+        full_user_content = (
+            f"Here is the verified real-time information retrieved for this query:\n"
+            f"{live_data}\n\n"
+            f"User Question: {user_text}\n\n"
+            f"Answer the user question directly using the real-time information above. Do not claim you lack real-time access."
+        )
+    else:
+        full_user_content = user_text
+
+    messages.append({"role": "user", "content": full_user_content})
 
     try:
         completion = client.chat.completions.create(
             model="openai/gpt-oss-120b",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a helpful AI assistant. Answer the user's message using "
-                        "the real-time web search results provided below whenever relevant.\n\n"
-                        f"REAL-TIME SEARCH CONTEXT:\n{search_context}"
-                    )
-                },
-                {"role": "user", "content": user_text}
-            ],
+            messages=messages,
             max_tokens=512,
         )
-        reply = completion.choices[0].message.content or "I couldn't generate a response. Please try asking again."
+        reply = completion.choices[0].message.content or "I couldn't generate a response."
     except Exception as e:
         reply = f"Error: {str(e)}"
 
-    # Ensure message text is never empty before sending to Telegram
     if not reply.strip():
-        reply = "Sorry, I received an empty response. Please try rephrasing your question."
+        reply = "Sorry, I received an empty response. Please try again."
 
     print(f"[Sent]: {reply[:50]}...")
     await update.message.reply_text(reply)
@@ -81,5 +100,5 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("--- PangJung_Bot with DDG Live Search Online ---")
+    print("--- PangJung_Bot Online ---")
     app.run_polling()
