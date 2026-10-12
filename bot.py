@@ -1,5 +1,6 @@
 import os
 import threading
+import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
@@ -26,16 +27,32 @@ def run_dummy_server():
     server = HTTPServer(("0.0.0.0", port), DummyServer)
     server.serve_forever()
 
-def search_web(query: str) -> str:
-    """Fetches real-time search results using DuckDuckGo."""
+def get_live_context(user_text: str) -> str:
+    """Fetches real-time weather or falls back to DuckDuckGo search."""
+    text_lower = user_text.lower()
+    
+    # 1. Direct weather lookup using wttr.in API
+    if "weather" in text_lower or "forecast" in text_lower or "temperature" in text_lower:
+        try:
+            # Extract basic query or city name
+            res = requests.get(f"https://wttr.in/{user_text}?format=3", timeout=5)
+            if res.status_code == 200 and res.text.strip():
+                return f"Live Weather Data: {res.text.strip()}"
+        except Exception as e:
+            print(f"Weather API error: {e}")
+
+    # 2. General DuckDuckGo Search fallback
     try:
         results = []
         with DDGS() as ddgs:
-            for r in ddgs.text(query, max_results=3):
-                results.append(f"Title: {r['title']}\nSnippet: {r['body']}")
-        return "\n\n".join(results) if results else "No real-time search results found."
+            for r in ddgs.text(user_text, max_results=3):
+                results.append(f"Title: {r.get('title')}\nSnippet: {r.get('body')}")
+        if results:
+            return "\n\n".join(results)
     except Exception as e:
-        return f"Search error: {str(e)}"
+        print(f"Search error: {e}")
+
+    return "No live data retrieved."
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
@@ -43,8 +60,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.chat.send_action("typing")
 
-    # Fetch live information from the web
-    search_context = search_web(user_text)
+    # Fetch live context
+    live_info = get_live_context(user_text)
 
     try:
         completion = client.chat.completions.create(
@@ -53,10 +70,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {
                     "role": "system",
                     "content": (
-                        "You are a helpful, direct, and concise AI assistant with real-time web access. "
-                        "Use the provided web search context below to accurately answer user questions about "
-                        "current events, weather, news, or general facts.\n\n"
-                        f"Web Search Context:\n{search_context}"
+                        "You are a helpful and direct AI assistant with access to real-time information. "
+                        "When real-time weather or search data is provided below, use it directly to answer "
+                        "the user's question accurately.\n\n"
+                        f"Real-Time Data:\n{live_info}"
                     )
                 },
                 {"role": "user", "content": user_text}
@@ -76,5 +93,5 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("--- PangJung_Bot with Web Search is ONLINE ---")
+    print("--- PangJung_Bot with Live Context is ONLINE ---")
     app.run_polling()
