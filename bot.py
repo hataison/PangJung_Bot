@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -27,32 +28,36 @@ def run_dummy_server():
     server = HTTPServer(("0.0.0.0", port), DummyServer)
     server.serve_forever()
 
-def get_live_context(user_text: str) -> str:
-    """Fetches real-time weather or falls back to DuckDuckGo search."""
-    text_lower = user_text.lower()
-    
-    # 1. Direct weather lookup using wttr.in API
-    if "weather" in text_lower or "forecast" in text_lower or "temperature" in text_lower:
-        try:
-            # Extract basic query or city name
-            res = requests.get(f"https://wttr.in/{user_text}?format=3", timeout=5)
-            if res.status_code == 200 and res.text.strip():
-                return f"Live Weather Data: {res.text.strip()}"
-        except Exception as e:
-            print(f"Weather API error: {e}")
+def extract_city(text: str) -> str:
+    """Extracts the city name from a user prompt if present."""
+    match = re.search(r'(?:in|for|at)\s+([a-zA-Z\s]+?)(?:\s+today|\s+now|\?|$)', text, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return "Tokyo"  # Fallback target if keyword 'weather' is detected without clear city
 
-    # 2. General DuckDuckGo Search fallback
+def fetch_weather(city: str) -> str:
+    """Fetches clean, real-time weather text from wttr.in."""
+    try:
+        url = f"https://wttr.in/{city}?format=%C+%t+Humidity:{h}+Wind:{w}"
+        res = requests.get(url, headers={"User-Agent": "curl/7.68.0"}, timeout=5)
+        if res.status_code == 200 and "Unknown" not in res.text:
+            return f"Current live weather in {city}: {res.text.strip()}"
+    except Exception as e:
+        print(f"Weather error: {e}")
+    return ""
+
+def search_ddg(query: str) -> str:
+    """Fetches live snippets from DuckDuckGo."""
     try:
         results = []
         with DDGS() as ddgs:
-            for r in ddgs.text(user_text, max_results=3):
+            for r in ddgs.text(query, max_results=3):
                 results.append(f"Title: {r.get('title')}\nSnippet: {r.get('body')}")
         if results:
             return "\n\n".join(results)
     except Exception as e:
-        print(f"Search error: {e}")
-
-    return "No live data retrieved."
+        print(f"DuckDuckGo error: {e}")
+    return ""
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
@@ -60,8 +65,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.chat.send_action("typing")
 
-    # Fetch live context
-    live_info = get_live_context(user_text)
+    text_lower = user_text.lower()
+    live_context = ""
+
+    # Check if user is asking about weather
+    if any(k in text_lower for k in ["weather", "temperature", "forecast", "rain", "degrees"]):
+        city = extract_city(user_text)
+        live_context = fetch_weather(city)
+
+    # Fall back to general web search if no weather context was built
+    if not live_context:
+        live_context = search_ddg(user_text)
+
+    # Final fallback message
+    if not live_context:
+        live_context = "No real-time web results found for this query."
 
     try:
         completion = client.chat.completions.create(
@@ -70,10 +88,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {
                     "role": "system",
                     "content": (
-                        "You are a helpful and direct AI assistant with access to real-time information. "
-                        "When real-time weather or search data is provided below, use it directly to answer "
-                        "the user's question accurately.\n\n"
-                        f"Real-Time Data:\n{live_info}"
+                        "You have real-time access to live data. You MUST use the provided REAL-TIME DATA "
+                        "below to answer the user's request directly. Do NOT say 'I don't have access to real-time data'.\n\n"
+                        f"REAL-TIME DATA:\n{live_context}"
                     )
                 },
                 {"role": "user", "content": user_text}
@@ -93,5 +110,5 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("--- PangJung_Bot with Live Context is ONLINE ---")
+    print("--- PangJung_Bot with Live Data is ONLINE ---")
     app.run_polling()
