@@ -25,20 +25,23 @@ def run_dummy_server():
     server.serve_forever()
 
 def fetch_live_info(query: str) -> str:
-    """Fetch live data using DuckDuckGo search or weather API."""
+    """Fetch live weather or general search results."""
     text_lower = query.lower()
     
-    # Fast path for weather requests
-    if any(k in text_lower for k in ["weather", "temperature", "forecast"]):
+    # 1. Weather requests via wttr.in
+    if any(k in text_lower for k in ["weather", "temperature", "forecast", "rain", "degrees"]):
         try:
-            # Fetch direct one-line weather details via wttr.in
-            res = requests.get(f"https://wttr.in/{query}?format=%l:+%C+%t+Humidity:%h+Wind:%w", headers={"User-Agent": "curl/7.68.0"}, timeout=5)
+            res = requests.get(
+                f"https://wttr.in/{query}?format=%l:+%C,+%t+(Humidity:+%h,+Wind:+%w)",
+                headers={"User-Agent": "curl/7.68.0"},
+                timeout=5
+            )
             if res.status_code == 200 and res.text.strip():
-                return f"[LIVE WEATHER DATA]: {res.text.strip()}"
+                return res.text.strip()
         except Exception as e:
-            print(f"Weather fetch error: {e}")
+            print(f"Weather error: {e}")
 
-    # General web search for other queries
+    # 2. General web search via DuckDuckGo
     try:
         results = []
         with DDGS() as ddgs:
@@ -46,9 +49,9 @@ def fetch_live_info(query: str) -> str:
                 title = r.get("title", "")
                 snippet = r.get("body", "")
                 if snippet:
-                    results.append(f"Title: {title}\nSummary: {snippet}")
+                    results.append(f"{title}: {snippet}")
         if results:
-            return "[LIVE WEB SEARCH RESULTS]:\n" + "\n\n".join(results)
+            return "\n\n".join(results)
     except Exception as e:
         print(f"DuckDuckGo error: {e}")
         
@@ -60,36 +63,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.chat.send_action("typing")
 
-    # Fetch live information
     live_data = fetch_live_info(user_text)
 
-    # Build prompt messages: Inject live context directly into user message flow
-    messages = []
-    
-    if live_data:
-        full_user_content = (
-            f"Here is the verified real-time information retrieved for this query:\n"
-            f"{live_data}\n\n"
-            f"User Question: {user_text}\n\n"
-            f"Answer the user question directly using the real-time information above. Do not claim you lack real-time access."
-        )
-    else:
-        full_user_content = user_text
-
-    messages.append({"role": "user", "content": full_user_content})
-
+    # Use Qwen model available on your Groq key which follows live context without refusal guardrails
     try:
+        if live_data:
+            system_prompt = (
+                "You are a helpful assistant. The following facts are RETRIEVED IN REAL-TIME. "
+                "Answer the user's question accurately using ONLY this retrieved data. "
+                "Do not add any disclaimer about real-time access.\n\n"
+                f"Retrieved Facts:\n{live_data}"
+            )
+        else:
+            system_prompt = "You are a helpful, direct assistant."
+
         completion = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
-            messages=messages,
+            model="qwen/qwen3.8-27b",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text}
+            ],
             max_tokens=512,
         )
-        reply = completion.choices[0].message.content or "I couldn't generate a response."
-    except Exception as e:
-        reply = f"Error: {str(e)}"
+        reply = completion.choices[0].message.content or ""
+        
+        # Hard safety override: If LLM still gives a canned refusal, output the raw fetched data directly
+        if not reply or "don't have access" in reply.lower() or "not able to pull" in reply.lower():
+            if live_data:
+                reply = f"Here is the latest live data:\n\n{live_data}"
+            else:
+                reply = "I couldn't retrieve live data for this query. Please try again."
 
-    if not reply.strip():
-        reply = "Sorry, I received an empty response. Please try again."
+    except Exception as e:
+        # Fallback if API fails: send live fetched data directly
+        if live_data:
+            reply = f"Live Data:\n{live_data}"
+        else:
+            reply = f"Error: {str(e)}"
 
     print(f"[Sent]: {reply[:50]}...")
     await update.message.reply_text(reply)
