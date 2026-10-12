@@ -4,6 +4,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from groq import Groq
+from duckduckgo_search import DDGS
 
 # Retrieve environment variables
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -25,11 +26,25 @@ def run_dummy_server():
     server = HTTPServer(("0.0.0.0", port), DummyServer)
     server.serve_forever()
 
+def search_web(query: str) -> str:
+    """Fetches real-time search results using DuckDuckGo."""
+    try:
+        results = []
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=3):
+                results.append(f"Title: {r['title']}\nSnippet: {r['body']}")
+        return "\n\n".join(results) if results else "No real-time search results found."
+    except Exception as e:
+        return f"Search error: {str(e)}"
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     print(f"[Received]: {user_text}")
 
     await update.message.chat.send_action("typing")
+
+    # Fetch live information from the web
+    search_context = search_web(user_text)
 
     try:
         completion = client.chat.completions.create(
@@ -37,7 +52,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a concise, direct, and helpful assistant. Provide fast and accurate answers."
+                    "content": (
+                        "You are a helpful, direct, and concise AI assistant with real-time web access. "
+                        "Use the provided web search context below to accurately answer user questions about "
+                        "current events, weather, news, or general facts.\n\n"
+                        f"Web Search Context:\n{search_context}"
+                    )
                 },
                 {"role": "user", "content": user_text}
             ],
@@ -56,5 +76,5 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("--- PangJung_Bot is ONLINE (24/7 Groq Cloud) ---")
+    print("--- PangJung_Bot with Web Search is ONLINE ---")
     app.run_polling()
