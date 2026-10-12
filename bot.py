@@ -5,11 +5,14 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from groq import Groq
 
+# Retrieve environment variables
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
+# Initialize Groq client
 client = Groq(api_key=GROQ_API_KEY)
 
+# Dummy HTTP server for Render free tier keep-alive
 class DummyServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -28,41 +31,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.chat.send_action("typing")
 
-    # TEST MODE: Try default supported models one by one
-    models_to_try = [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "llama3-70b-8192",
-        "llama3-8b-8192",
-        "mixtral-8x7b-32768",
-        "gemma2-9b-it"
-    ]
+    try:
+        completion = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a concise, direct, and helpful assistant. Provide fast and accurate answers."
+                },
+                {"role": "user", "content": user_text}
+            ],
+            max_tokens=512,
+        )
+        reply = completion.choices[0].message.content
+    except Exception as e:
+        reply = f"Error: {str(e)}"
 
-    success = False
-    for model_name in models_to_try:
-        try:
-            completion = client.chat.completions.create(
-                model=model_name,
-                messages=[{"role": "user", "content": user_text}],
-                max_tokens=100,
-            )
-            reply = completion.choices[0].message.content
-            print(f"[Success with model]: {model_name}")
-            success = True
-            break
-        except Exception as e:
-            print(f"[Failed model {model_name}]: {e}")
-            continue
-
-    if not success:
-        # If all fail, fetch the exact list allowed by your API key
-        try:
-            available = client.models.list()
-            model_ids = [m.id for m in available.data]
-            reply = f"Key active! Accessible models for your key:\n" + "\n".join(model_ids)
-        except Exception as e:
-            reply = f"API Key Error: {str(e)}"
-
+    print(f"[Sent]: {reply[:50]}...")
     await update.message.reply_text(reply)
 
 if __name__ == "__main__":
@@ -71,5 +56,5 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("--- PangJung_Bot Online ---")
+    print("--- PangJung_Bot is ONLINE (24/7 Groq Cloud) ---")
     app.run_polling()
