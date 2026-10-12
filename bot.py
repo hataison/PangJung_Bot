@@ -5,13 +5,14 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from groq import Groq
 
-# Initialize API Keys from environment variables
+# Retrieve environment variables
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
+# Initialize Groq client
 client = Groq(api_key=GROQ_API_KEY)
 
-# Dummy HTTP server to satisfy Render's free Web Service health check
+# Dummy HTTP server for Render free tier keep-alive
 class DummyServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -50,11 +51,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
 
 if __name__ == "__main__":
-    # Start dummy web server in a separate thread
     threading.Thread(target=run_dummy_server, daemon=True).start()
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    print("--- PangJung_Bot is ONLINE (24/7 Groq Cloud) ---")
+    app.run_polling()
 
     print("--- PangJung_Bot is ONLINE (24/7 Groq Cloud) ---")
     app.run_polling()
