@@ -24,24 +24,36 @@ def run_dummy_server():
     server = HTTPServer(("0.0.0.0", port), DummyServer)
     server.serve_forever()
 
-def fetch_live_info(query: str) -> str:
-    """Fetch live weather or general search results."""
-    text_lower = query.lower()
-    
-    # 1. Weather requests via wttr.in
-    if any(k in text_lower for k in ["weather", "temperature", "forecast", "rain", "degrees"]):
-        try:
-            res = requests.get(
-                f"https://wttr.in/{query}?format=%l:+%C,+%t+(Humidity:+%h,+Wind:+%w)",
-                headers={"User-Agent": "curl/7.68.0"},
-                timeout=5
-            )
-            if res.status_code == 200 and res.text.strip():
-                return res.text.strip()
-        except Exception as e:
-            print(f"Weather error: {e}")
+def get_live_weather(query: str) -> str:
+    """Extract location and fetch live weather using Open-Meteo geocoding & weather API."""
+    try:
+        # 1. Search city coordinates using Open-Meteo Geocoding
+        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={query}&count=1&language=en&format=json"
+        geo_res = requests.get(geo_url, timeout=5).json()
+        
+        if geo_res.get("results"):
+            city_info = geo_res["results"][0]
+            lat = city_info["latitude"]
+            lon = city_info["longitude"]
+            city_name = city_info["name"]
+            country = city_info.get("country", "")
 
-    # 2. General web search via DuckDuckGo
+            # 2. Fetch current weather for coordinates
+            weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
+            w_res = requests.get(weather_url, timeout=5).json()
+            curr = w_res.get("current_weather", {})
+
+            temp = curr.get("temperature")
+            wind = curr.get("windspeed")
+            
+            if temp is not None:
+                return f"Current live weather in {city_name}, {country}: Temperature is {temp}°C, Wind Speed is {wind} km/h."
+    except Exception as e:
+        print(f"Open-Meteo error: {e}")
+    return ""
+
+def search_ddg(query: str) -> str:
+    """DuckDuckGo fallback search for non-weather queries."""
     try:
         results = []
         with DDGS() as ddgs:
@@ -49,12 +61,11 @@ def fetch_live_info(query: str) -> str:
                 title = r.get("title", "")
                 snippet = r.get("body", "")
                 if snippet:
-                    results.append(f"{title}: {snippet}")
+                    results.append(f"- {title}: {snippet}")
         if results:
-            return "\n\n".join(results)
+            return "\n".join(results)
     except Exception as e:
         print(f"DuckDuckGo error: {e}")
-        
     return ""
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,43 +74,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.chat.send_action("typing")
 
-    live_data = fetch_live_info(user_text)
+    text_lower = user_text.lower()
+    live_data = ""
 
-    # Use Qwen model available on your Groq key which follows live context without refusal guardrails
+    # Detect weather intent
+    if any(k in text_lower for k in ["weather", "temperature", "forecast", "rain"]):
+        live_data = get_live_weather(user_text)
+
+    # General web search fallback if no weather data was fetched
+    if not live_data:
+        live_data = search_ddg(user_text)
+
+    # Prepare prompt
+    if live_data:
+        system_content = (
+            "You are a helpful assistant. Use the following real-time data to answer the user's question directly. "
+            "Do NOT state that you lack real-time access.\n\n"
+            f"REAL-TIME DATA:\n{live_data}"
+        )
+    else:
+        system_content = "You are a concise, helpful assistant."
+
     try:
-        if live_data:
-            system_prompt = (
-                "You are a helpful assistant. The following facts are RETRIEVED IN REAL-TIME. "
-                "Answer the user's question accurately using ONLY this retrieved data. "
-                "Do not add any disclaimer about real-time access.\n\n"
-                f"Retrieved Facts:\n{live_data}"
-            )
-        else:
-            system_prompt = "You are a helpful, direct assistant."
-
         completion = client.chat.completions.create(
-            model="qwen/qwen3.8-27b",
+            model="openai/gpt-oss-120b",
             messages=[
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": system_content},
                 {"role": "user", "content": user_text}
             ],
             max_tokens=512,
         )
         reply = completion.choices[0].message.content or ""
-        
-        # Hard safety override: If LLM still gives a canned refusal, output the raw fetched data directly
-        if not reply or "don't have access" in reply.lower() or "not able to pull" in reply.lower():
-            if live_data:
-                reply = f"Here is the latest live data:\n\n{live_data}"
-            else:
-                reply = "I couldn't retrieve live data for this query. Please try again."
+
+        # Fail-safe: If the LLM still gives a default disclaimer despite having live data, reply directly with the data
+        if live_data and ("don't have access" in reply.lower() or "cannot provide" in reply.lower()):
+            reply = f"Here is the real-time weather update:\n\n{live_data}"
 
     except Exception as e:
-        # Fallback if API fails: send live fetched data directly
         if live_data:
-            reply = f"Live Data:\n{live_data}"
+            reply = f"Real-Time Data:\n{live_data}"
         else:
             reply = f"Error: {str(e)}"
+
+    if not reply.strip():
+        reply = "Sorry, I couldn't process that request right now."
 
     print(f"[Sent]: {reply[:50]}...")
     await update.message.reply_text(reply)
