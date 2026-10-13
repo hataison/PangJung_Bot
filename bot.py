@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -24,11 +25,23 @@ def run_dummy_server():
     server = HTTPServer(("0.0.0.0", port), DummyServer)
     server.serve_forever()
 
-def get_live_weather(query: str) -> str:
-    """Extract location and fetch live weather using Open-Meteo geocoding & weather API."""
+def extract_city_name(text: str) -> str:
+    """Extracts a clean city name from user queries."""
+    # Look for common patterns like 'in Tokyo', 'for London'
+    match = re.search(r'(?:in|for|at)\s+([a-zA-Z\s]+?)(?:\s+today|\s+now|\?|$)', text, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    
+    # Simple fallback cleanups
+    clean_text = re.sub(r'(?i)(what is the|weather|temperature|forecast|today|now|in|for|\?)', '', text).strip()
+    return clean_text if clean_text else "Tokyo"
+
+def get_live_weather(user_text: str) -> str:
+    """Extracts city and queries Open-Meteo API cleanly."""
+    city_query = extract_city_name(user_text)
     try:
-        # 1. Search city coordinates using Open-Meteo Geocoding
-        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={query}&count=1&language=en&format=json"
+        # 1. Geocode city name to coordinates
+        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city_query}&count=1&language=en&format=json"
         geo_res = requests.get(geo_url, timeout=5).json()
         
         if geo_res.get("results"):
@@ -38,7 +51,7 @@ def get_live_weather(query: str) -> str:
             city_name = city_info["name"]
             country = city_info.get("country", "")
 
-            # 2. Fetch current weather for coordinates
+            # 2. Fetch current weather
             weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
             w_res = requests.get(weather_url, timeout=5).json()
             curr = w_res.get("current_weather", {})
@@ -47,13 +60,13 @@ def get_live_weather(query: str) -> str:
             wind = curr.get("windspeed")
             
             if temp is not None:
-                return f"Current live weather in {city_name}, {country}: Temperature is {temp}°C, Wind Speed is {wind} km/h."
+                return f"Live Weather Report for {city_name}, {country}:\n• Temperature: {temp}°C\n• Wind Speed: {wind} km/h"
     except Exception as e:
         print(f"Open-Meteo error: {e}")
     return ""
 
 def search_ddg(query: str) -> str:
-    """DuckDuckGo fallback search for non-weather queries."""
+    """DuckDuckGo fallback search for general queries."""
     try:
         results = []
         with DDGS() as ddgs:
@@ -61,7 +74,7 @@ def search_ddg(query: str) -> str:
                 title = r.get("title", "")
                 snippet = r.get("body", "")
                 if snippet:
-                    results.append(f"- {title}: {snippet}")
+                    results.append(f"• {title}: {snippet}")
         if results:
             return "\n".join(results)
     except Exception as e:
@@ -77,20 +90,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text_lower = user_text.lower()
     live_data = ""
 
-    # Detect weather intent
+    # Detect weather query
     if any(k in text_lower for k in ["weather", "temperature", "forecast", "rain"]):
         live_data = get_live_weather(user_text)
 
-    # General web search fallback if no weather data was fetched
+    # DuckDuckGo fallback if weather did not match
     if not live_data:
         live_data = search_ddg(user_text)
 
-    # Prepare prompt
+    # If we got live data, format system context
     if live_data:
         system_content = (
-            "You are a helpful assistant. Use the following real-time data to answer the user's question directly. "
-            "Do NOT state that you lack real-time access.\n\n"
-            f"REAL-TIME DATA:\n{live_data}"
+            "You are a helpful assistant. REAL-TIME DATA IS PROVIDED BELOW. "
+            "Use it directly to answer the user request. DO NOT say you cannot access real-time data.\n\n"
+            f"DATA:\n{live_data}"
         )
     else:
         system_content = "You are a concise, helpful assistant."
@@ -106,18 +119,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         reply = completion.choices[0].message.content or ""
 
-        # Fail-safe: If the LLM still gives a default disclaimer despite having live data, reply directly with the data
-        if live_data and ("don't have access" in reply.lower() or "cannot provide" in reply.lower()):
-            reply = f"Here is the real-time weather update:\n\n{live_data}"
+        # Fail-Safe Override: If LLM attempts any disclaimer while live_data exists, bypass LLM and send live_data
+        refusal_keywords = ["real-time", "not able", "cannot provide", "don't have access", "unable to"]
+        if live_data and any(k in reply.lower() for k in refusal_keywords):
+            reply = live_data
 
     except Exception as e:
         if live_data:
-            reply = f"Real-Time Data:\n{live_data}"
+            reply = live_data
         else:
             reply = f"Error: {str(e)}"
 
     if not reply.strip():
-        reply = "Sorry, I couldn't process that request right now."
+        reply = "Sorry, I couldn't fetch a response right now."
 
     print(f"[Sent]: {reply[:50]}...")
     await update.message.reply_text(reply)
@@ -128,5 +142,5 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("--- PangJung_Bot Online ---")
+    print("--- PangJung_Bot Live ---")
     app.run_polling()
